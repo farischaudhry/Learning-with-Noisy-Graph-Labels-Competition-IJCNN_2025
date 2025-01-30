@@ -9,6 +9,7 @@ __pycache__/
 gnn_env/
 wandb/
 data/
+submission.gz
 
 # Distribution / packaging
 .Python
