@@ -54,7 +54,7 @@ def get_latest_checkpoint(checkpoint_dir, dataset_name):
     checkpoint_files.sort(key=lambda x: int(x.split("_epoch_")[-1].split(".pth")[0]), reverse=True)
     return checkpoint_files[0]
 
-def train(model, optimizer, criterion, train_loader, val_loader, device, num_epochs, log_path, checkpoint_dir, dataset_name, patience=50):
+def train(model, optimizer, criterion, train_loader, val_loader, device, num_epochs, log_path, checkpoint_dir, dataset_name, patience=10):
     
     best_val_acc = 0.0
     patience_counter = 0
@@ -130,7 +130,7 @@ def main(args):
     hidden_dim = 64
     num_epochs = 1000
     learning_rate = 0.001
-    batch_size = 512
+    batch_size = 128
     output_dim = 6  # Fixed 
 
     model = SimpleGCN(input_dim, hidden_dim, output_dim).to(device)
@@ -138,7 +138,7 @@ def main(args):
     criterion = torch.nn.CrossEntropyLoss()
 
     test_dataset = GraphDataset(args.test_path, transform=add_zeros)
-    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
+    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, pin_memory=True)
 
     # Train nwe model on training set
     if args.train_path:
@@ -149,8 +149,8 @@ def main(args):
         val_size = len(train_dataset) - train_size
         train_dataset, val_dataset = torch.utils.data.random_split(train_dataset, [train_size, val_size])
 
-        train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-        val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
+        train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, pin_memory=True)
+        val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, pin_memory=True)
 
         # Initialize WandB (only if training)
         wandb.init(project="graph-noisy-labels", group=os.getenv("WANDB_RUN_GROUP", "unknown"))
@@ -194,6 +194,11 @@ def main(args):
     print(f"Test predictions saved to {output_csv_path}")
 
 if __name__ == "__main__":
+    # Random seeds for reproducibility
+    SEED = 1729
+    torch.manual_seed(SEED)
+    np.random.seed(SEED)
+
     parser = argparse.ArgumentParser(description="Train and evaluate a GCN model on graph datasets.")
     parser.add_argument("--train_path", type=str, default=None, help="Path to the training dataset (optional).")
     parser.add_argument("--test_path", type=str, required=True, help="Path to the test dataset.")
