@@ -54,7 +54,11 @@ def get_latest_checkpoint(checkpoint_dir, dataset_name):
     checkpoint_files.sort(key=lambda x: int(x.split("_epoch_")[-1].split(".pth")[0]), reverse=True)
     return checkpoint_files[0]
 
-def train(model, optimizer, criterion, train_loader, val_loader, device, num_epochs, log_path, checkpoint_dir, dataset_name):
+def train(model, optimizer, criterion, train_loader, val_loader, device, num_epochs, log_path, checkpoint_dir, dataset_name, patience=10):
+    
+    best_val_acc = 0.0
+    patience_counter = 0
+    
     with open(log_path, "a") as log_file:
         for epoch in range(num_epochs):
             model.train()
@@ -87,6 +91,17 @@ def train(model, optimizer, criterion, train_loader, val_loader, device, num_epo
 
                 checkpoint_path = os.path.join(checkpoint_dir, f"model_{dataset_name}_epoch_{epoch+1}.pth")
                 save_model(model, checkpoint_path)
+
+            if val_acc > best_val_acc:
+                best_val_acc = val_acc
+                patience_counter = 0
+            else:
+                patience_counter += 1
+
+            if patience_counter >= patience:
+                print(f"Early stopping at epoch {epoch + 1}")
+                log_file.write(f"Early stopping at epoch {epoch + 1}\n")b
+                break
 
 class SimpleGCN(torch.nn.Module):
     def __init__(self, input_dim, hidden_dim, output_dim):
@@ -149,7 +164,7 @@ def main(args):
         # Train model
         train(model, optimizer, criterion, train_loader, val_loader, device, num_epochs, log_path, checkpoint_dir, dataset_name)
 
-        # Save trained model
+        # Save final trained model
         dataset_name = os.path.basename(os.path.dirname(args.train_path))
         checkpoint_path = f"checkpoints/model_{dataset_name}_epoch_{num_epochs}.pth"
         os.makedirs("checkpoints", exist_ok=True)
