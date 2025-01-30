@@ -1,8 +1,7 @@
 import os
 import subprocess
 
-datasets = ["A"]
-# datasets = ["A", "B", "C", "D"]
+datasets = ["A", "B", "C", "D"]
 os.makedirs("submission", exist_ok=True)
 
 for dataset in datasets:

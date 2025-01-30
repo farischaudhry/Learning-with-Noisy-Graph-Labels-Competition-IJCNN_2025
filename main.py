@@ -54,7 +54,7 @@ def get_latest_checkpoint(checkpoint_dir, dataset_name):
     checkpoint_files.sort(key=lambda x: int(x.split("_epoch_")[-1].split(".pth")[0]), reverse=True)
     return checkpoint_files[0]
 
-def train(model, optimizer, criterion, train_loader, val_loader, device, num_epochs, log_path, checkpoint_dir, dataset_name, patience=10):
+def train(model, optimizer, criterion, train_loader, val_loader, device, num_epochs, log_path, checkpoint_dir, dataset_name, patience=50):
     
     best_val_acc = 0.0
     patience_counter = 0
@@ -100,7 +100,7 @@ def train(model, optimizer, criterion, train_loader, val_loader, device, num_epo
 
             if patience_counter >= patience:
                 print(f"Early stopping at epoch {epoch + 1}")
-                log_file.write(f"Early stopping at epoch {epoch + 1}\n")b
+                log_file.write(f"Early stopping at epoch {epoch + 1}\n")
                 break
 
 class SimpleGCN(torch.nn.Module):
