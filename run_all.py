@@ -20,6 +20,7 @@ for dataset in datasets:
 
     env = os.environ.copy()
     env["WANDB_RUN_GROUP"] = f"Dataset_{dataset}" 
+    env["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:128"
 
     subprocess.run(command, check=True, env=env)
 

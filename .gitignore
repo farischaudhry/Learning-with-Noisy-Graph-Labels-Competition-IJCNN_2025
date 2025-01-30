@@ -10,6 +10,7 @@ gnn_env/
 wandb/
 data/
 submission.gz
+cache/
 
 # Distribution / packaging
 .Python
