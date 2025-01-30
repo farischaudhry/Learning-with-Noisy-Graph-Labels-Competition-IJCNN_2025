@@ -1,8 +1,7 @@
 import os
 import subprocess
 
-datasets = ["A"]
-# datasets = ["A", "B", "C", "D"]
+datasets = ["A", "B", "C", "D"]
 os.makedirs("submission", exist_ok=True)
 
 for dataset in datasets:
@@ -20,6 +19,7 @@ for dataset in datasets:
 
     env = os.environ.copy()
     env["WANDB_RUN_GROUP"] = f"Dataset_{dataset}" 
+    env["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:128"
 
     subprocess.run(command, check=True, env=env)
 

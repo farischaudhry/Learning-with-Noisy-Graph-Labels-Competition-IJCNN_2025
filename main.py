@@ -2,9 +2,13 @@ import argparse
 import torch
 from torch_geometric.loader import DataLoader
 from torch_geometric.nn import GCNConv, global_mean_pool
+from torch.cuda.amp import autocast, GradScaler
+import torch.nn.functional as F
 from loadData import GraphDataset
+from sklearn.metrics import f1_score
 import os
 import pandas as pd
+import numpy as np
 import wandb    
 import glob
 
@@ -18,6 +22,7 @@ def evaluate(model, data_loader, device, calculate_accuracy=False):
     correct = 0
     total = 0
     predictions = []
+    targets = []
 
     with torch.no_grad():
         for data in data_loader:
@@ -25,15 +30,17 @@ def evaluate(model, data_loader, device, calculate_accuracy=False):
             output = model(data)
             pred = output.argmax(dim=1)
             predictions.extend(pred.cpu().numpy())
+            targets.extend(data.y.cpu().numpy())
 
-            if calculate_accuracy and data.y is not None:
+            if calculate_accuracy:
                 correct += (pred == data.y).sum().item()
                 total += data.y.numel()
 
-    if calculate_accuracy:
-        accuracy = correct / total if total > 0 else 0
-        return accuracy, predictions
-    return predictions
+    # Compute accuracy and F1-score
+    accuracy = correct / total if total > 0 else 0
+    f1 = f1_score(targets, predictions, average="macro")  
+
+    return accuracy, f1, predictions
 
 def save_model(model, checkpoint_path):
     torch.save(model.state_dict(), checkpoint_path)
@@ -54,11 +61,11 @@ def get_latest_checkpoint(checkpoint_dir, dataset_name):
     checkpoint_files.sort(key=lambda x: int(x.split("_epoch_")[-1].split(".pth")[0]), reverse=True)
     return checkpoint_files[0]
 
-def train(model, optimizer, criterion, train_loader, val_loader, device, num_epochs, log_path, checkpoint_dir, dataset_name, patience=10):
-    
-    best_val_acc = 0.0
+def train(model, optimizer, criterion, train_loader, val_loader, device, num_epochs, log_path, checkpoint_dir, dataset_name, patience=50):
+    scaler = GradScaler()
+    best_val_f1 = 0.0  # Track the best F1-score
     patience_counter = 0
-    
+
     with open(log_path, "a") as log_file:
         for epoch in range(num_epochs):
             model.train()
@@ -69,39 +76,46 @@ def train(model, optimizer, criterion, train_loader, val_loader, device, num_epo
             for data in train_loader:
                 data = data.to(device)
                 optimizer.zero_grad()
-                output = model(data)
-                loss = criterion(output, data.y)
-                loss.backward()
-                optimizer.step()
-                total_loss += loss.item()   
+
+                with autocast():
+                    output = model(data)
+                    loss = criterion(output, data.y)
+
+                scaler.scale(loss).backward()
+                scaler.step(optimizer)
+                scaler.update()
+
+                # Accumulate loss and accuracy stats
+                total_loss += loss.item()
 
                 pred = output.argmax(dim=1)
                 correct_train += (pred == data.y).sum().item()
                 total_train += data.y.numel()
 
+            # Compute final training loss and accuracy
             train_loss = total_loss / len(train_loader)
             train_acc = correct_train / total_train if total_train > 0 else 0
-            val_acc, _ = evaluate(model, val_loader, device, calculate_accuracy=True)
+            val_acc, val_f1, _ = evaluate(model, val_loader, device, calculate_accuracy=True)
 
-            # Log accuracy and loss. Every 10 epochs print and log locally. Save model checkpoint every 10 epochs.
-            wandb.log({"train_loss": train_loss, "train_acc": train_acc, "val_acc": val_acc})
+            # Log metrics to WandB
+            wandb.log({"train_loss": train_loss, "train_acc": train_acc, "val_acc": val_acc, "val_f1": val_f1})
+
             if (epoch + 1) % 10 == 0:
-                print(f"Epoch {epoch + 1}/{num_epochs}, Loss: {train_loss:.4f}, Val Acc: {val_acc:.4f}")
-                log_file.write(f"Epoch {epoch + 1}: Train Loss = {train_loss:.4f}, Val Acc = {val_acc:.4f}\n")
+                print(f"Epoch {epoch + 1}, Loss: {train_loss:.4f}, Val Acc: {val_acc:.4f}, Val F1: {val_f1:.4f}")
+                log_file.write(f"Epoch {epoch + 1}: Train Loss = {train_loss:.4f}, Val Acc = {val_acc:.4f}, Val F1 = {val_f1:.4f}\n")
+                save_model(model, os.path.join(checkpoint_dir, f"model_{dataset_name}_epoch_{epoch+1}.pth"))
 
-                checkpoint_path = os.path.join(checkpoint_dir, f"model_{dataset_name}_epoch_{epoch+1}.pth")
-                save_model(model, checkpoint_path)
-
-            if val_acc > best_val_acc:
-                best_val_acc = val_acc
+            if val_f1 > best_val_f1:
+                best_val_f1 = val_f1
                 patience_counter = 0
             else:
                 patience_counter += 1
 
             if patience_counter >= patience:
                 print(f"Early stopping at epoch {epoch + 1}")
-                log_file.write(f"Early stopping at epoch {epoch + 1}\n")b
-                break
+                log_file.write(f"Early stopping at epoch {epoch + 1}\n")
+                return epoch + 1
+        return num_epochs
 
 class SimpleGCN(torch.nn.Module):
     def __init__(self, input_dim, hidden_dim, output_dim):
@@ -109,18 +123,18 @@ class SimpleGCN(torch.nn.Module):
         self.embedding = torch.nn.Embedding(1, input_dim) 
         self.conv1 = GCNConv(input_dim, hidden_dim)
         self.conv2 = GCNConv(hidden_dim, hidden_dim)
+        self.conv3 = GCNConv(hidden_dim, hidden_dim)
         self.global_pool = global_mean_pool  
         self.fc = torch.nn.Linear(hidden_dim, output_dim)
 
     def forward(self, data):
         x, edge_index, batch = data.x, data.edge_index, data.batch
         x = self.embedding(x)  
-        x = self.conv1(x, edge_index)
-        x = torch.relu(x)
-        x = self.conv2(x, edge_index)
+        x = self.conv1(x, edge_index).relu()
+        x = self.conv2(x, edge_index).relu()
+        x = self.conv3(x, edge_index)  
         x = self.global_pool(x, batch)  
-        out = self.fc(x)  
-        return out
+        return self.fc(x)
 
 def main(args):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -129,8 +143,8 @@ def main(args):
     input_dim = 300
     hidden_dim = 64
     num_epochs = 1000
-    learning_rate = 0.001
-    batch_size = 512
+    learning_rate = 0.01
+    batch_size = 128
     output_dim = 6  # Fixed 
 
     model = SimpleGCN(input_dim, hidden_dim, output_dim).to(device)
@@ -138,7 +152,7 @@ def main(args):
     criterion = torch.nn.CrossEntropyLoss()
 
     test_dataset = GraphDataset(args.test_path, transform=add_zeros)
-    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
+    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, pin_memory=True)
 
     # Train nwe model on training set
     if args.train_path:
@@ -149,8 +163,8 @@ def main(args):
         val_size = len(train_dataset) - train_size
         train_dataset, val_dataset = torch.utils.data.random_split(train_dataset, [train_size, val_size])
 
-        train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-        val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
+        train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, pin_memory=True)
+        val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, pin_memory=True)
 
         # Initialize WandB (only if training)
         wandb.init(project="graph-noisy-labels", group=os.getenv("WANDB_RUN_GROUP", "unknown"))
@@ -162,11 +176,11 @@ def main(args):
         checkpoint_dir = "checkpoints"
 
         # Train model
-        train(model, optimizer, criterion, train_loader, val_loader, device, num_epochs, log_path, checkpoint_dir, dataset_name)
+        finish_epoch = train(model, optimizer, criterion, train_loader, val_loader, device, num_epochs, log_path, checkpoint_dir, dataset_name)
 
         # Save final trained model
         dataset_name = os.path.basename(os.path.dirname(args.train_path))
-        checkpoint_path = f"checkpoints/model_{dataset_name}_epoch_{num_epochs}.pth"
+        checkpoint_path = f"checkpoints/model_{dataset_name}_epoch_{finish_epoch}.pth"
         os.makedirs("checkpoints", exist_ok=True)
         save_model(model, checkpoint_path)
 
@@ -179,7 +193,7 @@ def main(args):
         load_model(model, checkpoint_path, device)
 
     # Evaluate test set 
-    predictions = evaluate(model, test_loader, device, calculate_accuracy=False)
+    _, _, predictions = evaluate(model, test_loader, device, calculate_accuracy=False)
     test_graph_ids = list(range(len(predictions)))
 
     # Save predictions to CSV
@@ -187,13 +201,18 @@ def main(args):
     os.makedirs(output_dir, exist_ok=True)
     output_csv_path = os.path.join(output_dir, f"testset_{dataset_name}.csv")
     output_df = pd.DataFrame({
-        "GraphID": test_graph_ids,
-        "Class": predictions
+        "id": test_graph_ids,
+        "pred": predictions
     })
     output_df.to_csv(output_csv_path, index=False)
     print(f"Test predictions saved to {output_csv_path}")
 
 if __name__ == "__main__":
+    # Random seeds for reproducibility
+    SEED = 1729
+    torch.manual_seed(SEED)
+    np.random.seed(SEED)
+
     parser = argparse.ArgumentParser(description="Train and evaluate a GCN model on graph datasets.")
     parser.add_argument("--train_path", type=str, default=None, help="Path to the training dataset (optional).")
     parser.add_argument("--test_path", type=str, required=True, help="Path to the test dataset.")
